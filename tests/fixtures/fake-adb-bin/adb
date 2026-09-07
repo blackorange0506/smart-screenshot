@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# A stand-in adb for the tests: answers the handful of commands the capture script issues,
+# records every invocation in $FAKE_ADB_LOG, and never touches a device. Knobs (env):
+#   FAKE_ADB_DEVICES     lines for `adb devices -l` (default: one emulator)
+#   FAKE_ADB_INSTALLED   space-separated packages `pm list packages` reports
+#   FAKE_ADB_FOREGROUND  the package dumpsys window reports as focused
+#   FAKE_ADB_VERSION     the versionCode dumpsys package reports for installed packages
+#   FAKE_ADB_DUMP_FAIL   1 -> `uiautomator dump` fails
+#   FAKE_ADB_BOUNDS_STATE / FAKE_ADB_TAPS_STATE  prior overlay states (getprop / settings get)
+set -u
+log() { [ -n "${FAKE_ADB_LOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_ADB_LOG"; return 0; }
+log "adb $*"
+if [ "${1:-}" = "-s" ]; then shift 2; fi
+cmd="${1:-}"; shift || true
+DEVICES="${FAKE_ADB_DEVICES-emulator-5554          device product:sdk_gphone64 model:Pixel_7 device:emu64a transport_id:1}"
+INSTALLED="${FAKE_ADB_INSTALLED-com.example.app.debug com.example.app com.android.settings}"
+FOREGROUND="${FAKE_ADB_FOREGROUND-com.example.app.debug}"
+VERSION="${FAKE_ADB_VERSION-42}"
+XML='<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hierarchy rotation="0"><node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.example.app.debug" content-desc="" checkable="false" checked="false" clickable="false" enabled="true" focusable="false" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[0,0][1080,2340]"><node index="0" text="Save" resource-id="btn_save" class="android.view.View" package="com.example.app.debug" content-desc="" checkable="false" checked="false" clickable="true" enabled="true" focusable="true" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[100,1150][800,1250]" /></node></hierarchy>'
+png() { printf '\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\x0aIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\x0d\x0a\x2d\xb4\x00\x00\x00\x00IEND\xaeB\x60\x82'; }
+case "$cmd" in
+  devices)
+    printf 'List of devices attached\n'
+    [ -n "$DEVICES" ] && printf '%s\n' "$DEVICES"
+    ;;
+  start-server|connect|reconnect|kill-server) ;;
+  exec-out)
+    case "$*" in
+      "screencap -p") png ;;
+      "cat /sdcard/window_dump.xml") printf '%s' "$XML" ;;
+      *) echo "fake adb: unknown exec-out: $*" >&2; exit 1 ;;
+    esac ;;
+  shell)
+    case "$*" in
+      "pm list packages") for p in $INSTALLED; do printf 'package:%s\r\n' "$p"; done ;;
+      "dumpsys window") printf '  mCurrentFocus=Window{1a2b3c u0 %s/%s.MainActivity}\r\n' "$FOREGROUND" "$FOREGROUND" ;;
+      "dumpsys activity activities") printf '    topResumedActivity=ActivityRecord{abc u0 %s/.MainActivity t12}\r\n' "$FOREGROUND" ;;
+      dumpsys\ package\ *)
+        pkg="${3:-}"
+        case " $INSTALLED " in *" $pkg "*) printf '    versionCode=%s minSdk=24 targetSdk=34\r\n    versionName=1.2.3\r\n' "$VERSION" ;; esac ;;
+      uiautomator\ dump\ *)
+        [ "${FAKE_ADB_DUMP_FAIL:-0}" = 1 ] && { echo "ERROR: could not get idle state." >&2; exit 1; }
+        printf 'UI hierchary dumped to: %s\r\n' "$3" ;;
+      "rm -f /sdcard/window_dump.xml") ;;
+      "getprop debug.layout") printf '%s\r\n' "${FAKE_ADB_BOUNDS_STATE-false}" ;;
+      setprop\ *) ;;
+      "settings get system show_touches") printf '%s\r\n' "${FAKE_ADB_TAPS_STATE-0}" ;;
+      settings\ put\ *) ;;
+      service\ call\ *) printf 'Result: Parcel(00000000)\r\n' ;;
+      *) echo "fake adb: unknown shell command: $*" >&2; exit 1 ;;
+    esac ;;
+  *) echo "fake adb: unknown command: $cmd $*" >&2; exit 1 ;;
+esac
+exit 0

@@ -1,0 +1,5 @@
+.DS_Store
+tests/.tmp/
+.idea/
+__pycache__/
+scripts/banlist.local.txt

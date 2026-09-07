@@ -1,0 +1,5 @@
+# Everything text is LF, on every OS: bash cannot run a CRLF script, and the tests compare
+# files byte for byte. Windows clones with core.autocrlf=true would otherwise break both.
+* text=auto eol=lf
+*.png binary
+*.jpg binary

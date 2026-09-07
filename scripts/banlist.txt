@@ -1,0 +1,9 @@
+# Words that must never appear in this repository. The skill was extracted from a private
+# project and ships without any trace of it; the words that would identify that project live
+# in the git-ignored scripts/banlist.local.txt, which check_banlist.sh also reads when present.
+# One extended regex per line; a line starting with "i:" is matched case-insensitively. Lines
+# starting with "#" are comments.
+StudioProjects
+claude\.ai/code/session_
+i:adb-tools
+i:ios-tools

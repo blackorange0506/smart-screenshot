@@ -1,0 +1,51 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash   # Git Bash on Windows — the shell Claude Code uses there
+    steps:
+      - uses: actions/checkout@v4
+      - name: tools
+        run: |
+          case "$RUNNER_OS" in
+            Linux)   sudo apt-get update -q && sudo apt-get install -y -q shellcheck jq libxml2-utils ;;
+            macOS)   brew install shellcheck jq ;;
+            Windows) echo "Windows: nothing installed; jq may or may not be there, both paths must work" ;;
+          esac
+          bash --version | head -1; uname -s
+          command -v python3 || true; command -v python || true; command -v py || true
+          command -v jq || echo "no jq"; command -v xmllint || echo "no xmllint"; command -v adb || echo "no adb"
+      - name: banlist
+        run: bash scripts/check_banlist.sh
+      - name: shellcheck
+        if: runner.os != 'Windows'
+        run: bash scripts/lint.sh
+      - name: tests (system bash)
+        run: bash tests/run.sh
+      - name: tests (/bin/bash 3.2 on macOS)
+        if: runner.os == 'macOS'
+        run: /bin/bash tests/run.sh
+      - name: install into a fresh project and capture with the fake adb
+        run: |
+          d="$(mktemp -d)"; cd "$d"; git init -q; git config user.name ci; git config user.email ci@example.com
+          bash "$GITHUB_WORKSPACE/install.sh"
+          git add -A; git commit -q -m "CI-1: First commit"
+          bash .claude/skills/smartScreenshot/scripts/smartScreenshot.sh --help >/dev/null
+          bash .claude/skills/smartScreenshot/scripts/smartScreenshot.sh --ios --help >/dev/null
+          # cd && pwd: on Windows GITHUB_WORKSPACE is D:\a\… which Git Bash cannot search as a PATH entry
+          fake="$(cd "$GITHUB_WORKSPACE/tests/fixtures/fake-adb-bin" && pwd)"
+          xml="$(PATH="$fake:$PATH" bash .claude/skills/smartScreenshot/scripts/smartScreenshot.sh --no-annotate | tail -1)"
+          echo "captured $xml"; grep -q '<hierarchy' "$xml"
+          # not `| grep -q`: it would close the pipe on the first match and the selector's next printf would fail
+          sel="$(bash .claude/skills/processSmartScreenshot/scripts/select_smartScreenshot.sh)"; echo "$sel" | grep -q '^XML='
+          bash .claude/smart-screenshot/bin/py.sh .claude/skills/smartScreenshot/scripts/selftest_maestro_to_uiautomator.py | grep -q PASSED
+          bash "$GITHUB_WORKSPACE/uninstall.sh"

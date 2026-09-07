@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>smartScreenshot annotator</title>
+<style>
+  :root { --bg:#1e1f22; --panel:#26282d; --fg:#e6e6e6; --muted:#9aa0a6;
+          --accent:#4f8cff; --danger:#e35d5d; --ok:#5eb46a; --border:#3a3d44; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
+               font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  #toolbar { position: sticky; top: 0; z-index: 10; display: flex; gap: 6px;
+             align-items: center; padding: 8px 10px; background: var(--panel);
+             border-bottom: 1px solid var(--border); }
+  #toolbar button { background: #33363c; color: var(--fg); border: 1px solid var(--border);
+                    padding: 6px 10px; border-radius: 4px; cursor: pointer; font: inherit; }
+  #toolbar button:hover { background: #3d4047; }
+  #toolbar button.active { background: var(--accent); border-color: var(--accent); }
+  #toolbar #save { background: var(--ok); border-color: var(--ok); }
+  #toolbar #save:hover { filter: brightness(1.1); }
+  #status { margin-left: auto; color: var(--muted); }
+  #main { display: grid; grid-template-columns: 1fr 380px; height: calc(100% - 49px); }
+  #canvas-wrap { position: relative; overflow: auto; background: #111; }
+  #canvas-wrap img { display: block; max-width: none; }
+  #overlay { position: absolute; left: 0; top: 0; cursor: crosshair; }
+  #side { background: var(--panel); border-left: 1px solid var(--border);
+          overflow-y: auto; padding: 8px; }
+  #side h3 { margin: 4px 4px 8px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .mark { background: #2c2f35; border: 1px solid var(--border); border-radius: 4px;
+          padding: 6px 8px; margin-bottom: 6px; }
+  .mark.selected { border-color: var(--accent); }
+  .mark .row1 { display: flex; align-items: center; gap: 6px; }
+  .mark .badge { display: inline-block; min-width: 22px; height: 22px; line-height: 22px;
+                 text-align: center; border-radius: 11px; background: var(--accent);
+                 color: #fff; font-weight: 600; font-size: 12px; padding: 0 6px; }
+  .mark .type { color: var(--muted); font-size: 11px; text-transform: uppercase; }
+  .mark .geom { color: var(--muted); font-size: 11px; margin-left: auto; }
+  .mark .del { background: transparent; border: 0; color: var(--danger); cursor: pointer;
+               font-size: 14px; padding: 0 4px; }
+  .mark textarea { width: 100%; margin-top: 6px; min-height: 38px; resize: vertical;
+                   background: #1e1f22; color: var(--fg); border: 1px solid var(--border);
+                   border-radius: 3px; padding: 4px 6px; font: inherit; }
+  .mark .view { margin-top: 4px; font-size: 11px; color: var(--muted); word-break: break-all; }
+  .mark .view code { color: #b6d3ff; background: #1a1d22; padding: 0 3px; border-radius: 2px; }
+  #empty { color: var(--muted); padding: 16px; text-align: center; font-style: italic; }
+  #legend { position: fixed; right: 396px; bottom: 12px; background: rgba(0,0,0,.7);
+            padding: 6px 10px; border-radius: 4px; color: var(--muted); font-size: 11px;
+            pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <button data-tool="point">● Point</button>
+  <button data-tool="rect">▭ Rect</button>
+  <button data-tool="polyline">⌒ Polyline</button>
+  <button id="finish-poly" style="display:none">✓ Finish polyline</button>
+  <button id="save">💾 Save</button>
+  <span id="status">loading…</span>
+</div>
+<div id="main">
+  <div id="canvas-wrap">
+    <img id="img" alt="screenshot">
+    <canvas id="overlay"></canvas>
+  </div>
+  <div id="side"><h3>Marks</h3><div id="marks-host"><div id="empty">No marks yet. Pick a tool and click on the image.</div></div></div>
+</div>
+<div id="legend">click on image to add · double-click polyline last vertex to finish · marks save with their matching uiautomator node</div>
+
+<script>
+'use strict';
+
+// ---- query params --------------------------------------------------------
+const PARAMS = new URLSearchParams(location.search);
+const IMAGE_FILE = PARAMS.get('image');                 // e.g. smartScreenShot_..._x.png
+const XML_FILE = PARAMS.get('xml') || (IMAGE_FILE && IMAGE_FILE.replace(/\.png$/, '.xml'));
+if (!IMAGE_FILE) {
+  document.body.innerHTML = '<p style="padding:20px;color:#e35d5d">Missing ?image=&lt;basename&gt;.png query param.</p>';
+  throw new Error('no image param');
+}
+const STEM = IMAGE_FILE.replace(/\.png$/, '');
+const MARKS_FILE = STEM + '.marks.json';
+const LS_KEY = 'smartScreenshot.marks.' + STEM;
+
+// ---- state ---------------------------------------------------------------
+const state = {
+  tool: null,              // 'point' | 'rect' | 'polyline' | null
+  marks: [],               // {id, type, geometry, comment, view}
+  nodes: [],               // [{class, resource-id, text, content-desc, bounds:[x1,y1,x2,y2], depth}]
+  imgW: 0, imgH: 0,
+  nextId: 1,
+  // drag state for rect / polyline
+  drag: null,              // {x0,y0,x1,y1} for rect
+  poly: null,              // {points:[[x,y],...]} in progress
+  selected: null,          // mark id
+};
+
+// ---- elements ------------------------------------------------------------
+const img = document.getElementById('img');
+const canvas = document.getElementById('overlay');
+const ctx = canvas.getContext('2d');
+const wrap = document.getElementById('canvas-wrap');
+const marksHost = document.getElementById('marks-host');
+const statusEl = document.getElementById('status');
+const finishPolyBtn = document.getElementById('finish-poly');
+
+// ---- load image + xml ----------------------------------------------------
+img.src = encodeURIComponent(IMAGE_FILE);
+img.onload = () => {
+  state.imgW = img.naturalWidth;
+  state.imgH = img.naturalHeight;
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  canvas.style.width = img.naturalWidth + 'px';
+  canvas.style.height = img.naturalHeight + 'px';
+  img.style.width = img.naturalWidth + 'px';
+  img.style.height = img.naturalHeight + 'px';
+  loadXml().then(() => loadFromLocalStorage()).then(redraw);
+};
+img.onerror = () => { statusEl.textContent = 'failed to load image'; statusEl.style.color = '#e35d5d'; };
+
+async function loadXml() {
+  if (!XML_FILE) { statusEl.textContent = 'no xml — view correlation off'; return; }
+  try {
+    const r = await fetch(encodeURIComponent(XML_FILE));
+    if (!r.ok) throw new Error('http ' + r.status);
+    const text = await r.text();
+    const doc = new DOMParser().parseFromString(text, 'application/xml');
+    const nodes = doc.getElementsByTagName('node');
+    state.nodes = [];
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i];
+      const b = n.getAttribute('bounds') || '';
+      const m = b.match(/^\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]$/);
+      if (!m) continue;
+      const x1 = +m[1], y1 = +m[2], x2 = +m[3], y2 = +m[4];
+      // depth = distance from <hierarchy> root
+      let depth = 0; for (let p = n.parentNode; p && p.tagName === 'node'; p = p.parentNode) depth++;
+      state.nodes.push({
+        cls: n.getAttribute('class') || '',
+        resourceId: n.getAttribute('resource-id') || '',
+        text: n.getAttribute('text') || '',
+        contentDesc: n.getAttribute('content-desc') || '',
+        bounds: [x1, y1, x2, y2],
+        area: Math.max(0, (x2 - x1)) * Math.max(0, (y2 - y1)),
+        depth,
+      });
+    }
+    statusEl.textContent = `${state.nodes.length} nodes loaded`;
+  } catch (e) {
+    statusEl.textContent = 'xml load failed: ' + e.message;
+    statusEl.style.color = '#e35d5d';
+  }
+}
+
+// ---- node lookup ---------------------------------------------------------
+function nodeAt(x, y) {
+  // Pick the deepest node whose bounds contain (x,y); tiebreak by smallest area.
+  let best = null;
+  for (const n of state.nodes) {
+    const [x1, y1, x2, y2] = n.bounds;
+    if (x < x1 || y < y1 || x >= x2 || y >= y2) continue;
+    if (!best) { best = n; continue; }
+    if (n.depth > best.depth) best = n;
+    else if (n.depth === best.depth && n.area < best.area) best = n;
+  }
+  return best;
+}
+function viewSummary(n) {
+  if (!n) return null;
+  return {
+    resource_id: n.resourceId,
+    class: n.cls,
+    text: n.text,
+    content_desc: n.contentDesc,
+    bounds: n.bounds,
+  };
+}
+function viewLabel(v) {
+  if (!v) return '<span class="view">no matching view</span>';
+  const id = v.resource_id ? v.resource_id.split('/').pop() : '';
+  const cls = v.class.split('.').pop();
+  const txt = v.text ? ` "${esc(v.text)}"` : '';
+  const cd = v.content_desc ? ` desc="${esc(v.content_desc)}"` : '';
+  return `<div class="view">view: <code>${esc(id || '(no id)')}</code> <code>${esc(cls)}</code>${txt}${cd}</div>`;
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+// ---- coords --------------------------------------------------------------
+function imgCoords(ev) {
+  const r = canvas.getBoundingClientRect();
+  return [Math.round(ev.clientX - r.left), Math.round(ev.clientY - r.top)];
+}
+
+// ---- tools ---------------------------------------------------------------
+document.querySelectorAll('#toolbar button[data-tool]').forEach(b => {
+  b.addEventListener('click', () => {
+    setTool(state.tool === b.dataset.tool ? null : b.dataset.tool);
+  });
+});
+function setTool(t) {
+  state.tool = t;
+  document.querySelectorAll('#toolbar button[data-tool]').forEach(b => {
+    b.classList.toggle('active', b.dataset.tool === t);
+  });
+  if (state.poly) {                      // cancel any in-progress polyline
+    state.poly = null; finishPolyBtn.style.display = 'none'; redraw();
+  }
+}
+finishPolyBtn.addEventListener('click', finishPolyline);
+
+// ---- canvas events -------------------------------------------------------
+canvas.addEventListener('mousedown', ev => {
+  if (!state.tool) return;
+  const [x, y] = imgCoords(ev);
+  if (state.tool === 'rect') { state.drag = { x0: x, y0: y, x1: x, y1: y }; redraw(); }
+});
+canvas.addEventListener('mousemove', ev => {
+  if (state.drag) { const [x, y] = imgCoords(ev); state.drag.x1 = x; state.drag.y1 = y; redraw(); }
+  else if (state.poly) { const [x, y] = imgCoords(ev); state.poly.cursor = [x, y]; redraw(); }
+});
+canvas.addEventListener('mouseup', ev => {
+  if (!state.drag) return;
+  const [x, y] = imgCoords(ev);
+  state.drag.x1 = x; state.drag.y1 = y;
+  const x0 = Math.min(state.drag.x0, x), y0 = Math.min(state.drag.y0, y);
+  const w = Math.abs(x - state.drag.x0), h = Math.abs(y - state.drag.y0);
+  state.drag = null;
+  if (w < 4 && h < 4) { redraw(); return; }   // ignore micro-rects
+  addMark({ type: 'rect', geometry: { x: x0, y: y0, w, h } });
+});
+canvas.addEventListener('click', ev => {
+  if (state.drag) return;                  // handled by mouseup
+  const [x, y] = imgCoords(ev);
+  if (state.tool === 'point') addMark({ type: 'point', geometry: { x, y } });
+  else if (state.tool === 'polyline') {
+    if (!state.poly) { state.poly = { points: [[x, y]] }; finishPolyBtn.style.display = ''; }
+    else state.poly.points.push([x, y]);
+    redraw();
+  }
+});
+canvas.addEventListener('dblclick', () => { if (state.poly) finishPolyline(); });
+function finishPolyline() {
+  if (!state.poly || state.poly.points.length < 2) { state.poly = null; finishPolyBtn.style.display = 'none'; redraw(); return; }
+  const pts = state.poly.points.slice();
+  state.poly = null; finishPolyBtn.style.display = 'none';
+  addMark({ type: 'polyline', geometry: { points: pts } });
+}
+
+// ---- marks ---------------------------------------------------------------
+function markCenter(m) {
+  if (m.type === 'point') return [m.geometry.x, m.geometry.y];
+  if (m.type === 'rect') return [m.geometry.x + m.geometry.w / 2, m.geometry.y + m.geometry.h / 2];
+  const pts = m.geometry.points;
+  let sx = 0, sy = 0; for (const [x, y] of pts) { sx += x; sy += y; }
+  return [Math.round(sx / pts.length), Math.round(sy / pts.length)];
+}
+function addMark(partial) {
+  const m = Object.assign({ id: state.nextId++, comment: '', view: null }, partial);
+  const [cx, cy] = markCenter(m);
+  m.view = viewSummary(nodeAt(cx, cy));
+  state.marks.push(m);
+  state.selected = m.id;
+  saveLocal(); renderList(); redraw();
+  // focus the new mark's comment
+  const ta = document.querySelector(`textarea[data-mid="${m.id}"]`);
+  if (ta) ta.focus();
+}
+function deleteMark(id) {
+  state.marks = state.marks.filter(m => m.id !== id);
+  if (state.selected === id) state.selected = null;
+  saveLocal(); renderList(); redraw();
+}
+function selectMark(id) { state.selected = id; renderList(); redraw(); }
+
+// ---- render --------------------------------------------------------------
+const COLORS = ['#4f8cff', '#5eb46a', '#e6c84d', '#e35d5d', '#b07cf3', '#4ec5d6', '#e08c4d'];
+function colorFor(i) { return COLORS[i % COLORS.length]; }
+
+function redraw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  state.marks.forEach((m, i) => drawMark(m, colorFor(i), m.id === state.selected));
+  if (state.drag) {
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+    const x = Math.min(state.drag.x0, state.drag.x1), y = Math.min(state.drag.y0, state.drag.y1);
+    const w = Math.abs(state.drag.x1 - state.drag.x0), h = Math.abs(state.drag.y1 - state.drag.y0);
+    ctx.strokeRect(x, y, w, h); ctx.setLineDash([]);
+  }
+  if (state.poly) {
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    const pts = state.poly.points;
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    if (state.poly.cursor) ctx.lineTo(state.poly.cursor[0], state.poly.cursor[1]);
+    ctx.stroke(); ctx.setLineDash([]);
+    pts.forEach(([x, y]) => { ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill(); });
+  }
+}
+function drawMark(m, color, selected) {
+  ctx.lineWidth = selected ? 4 : 2;
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  if (m.type === 'point') {
+    ctx.beginPath(); ctx.arc(m.geometry.x, m.geometry.y, 8, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(m.geometry.x, m.geometry.y, 3, 0, Math.PI * 2); ctx.fill();
+    drawBadge(m.geometry.x + 12, m.geometry.y - 12, m.id, color);
+  } else if (m.type === 'rect') {
+    const g = m.geometry;
+    ctx.strokeRect(g.x, g.y, g.w, g.h);
+    drawBadge(g.x + 6, g.y + 6, m.id, color);
+  } else if (m.type === 'polyline') {
+    const pts = m.geometry.points;
+    ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.stroke();
+    pts.forEach(([x, y]) => { ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill(); });
+    drawBadge(pts[0][0] + 8, pts[0][1] - 8, m.id, color);
+  }
+}
+function drawBadge(x, y, id, color) {
+  const txt = String(id);
+  ctx.font = 'bold 14px -apple-system, sans-serif';
+  const w = ctx.measureText(txt).width + 10;
+  ctx.fillStyle = color; ctx.beginPath();
+  // simple rounded-ish rect
+  ctx.fillRect(x, y, w, 18);
+  ctx.fillStyle = '#fff'; ctx.fillText(txt, x + 5, y + 13);
+}
+
+function renderList() {
+  if (state.marks.length === 0) {
+    marksHost.innerHTML = '<div id="empty">No marks yet. Pick a tool and click on the image.</div>';
+    return;
+  }
+  const html = state.marks.map((m, i) => {
+    const color = colorFor(i);
+    const geom = geomLabel(m);
+    return `<div class="mark ${m.id === state.selected ? 'selected' : ''}" data-mid="${m.id}" style="border-left:3px solid ${color}">
+      <div class="row1">
+        <span class="badge" style="background:${color}">${m.id}</span>
+        <span class="type">${m.type}</span>
+        <span class="geom">${esc(geom)}</span>
+        <button class="del" title="delete">✕</button>
+      </div>
+      ${viewLabel(m.view)}
+      <textarea data-mid="${m.id}" placeholder="comment…">${esc(m.comment || '')}</textarea>
+    </div>`;
+  }).join('');
+  marksHost.innerHTML = html;
+  marksHost.querySelectorAll('.mark').forEach(el => {
+    const id = +el.dataset.mid;
+    el.addEventListener('click', e => {
+      if (e.target.tagName === 'TEXTAREA' || e.target.classList.contains('del')) return;
+      selectMark(id);
+    });
+    el.querySelector('.del').addEventListener('click', () => deleteMark(id));
+    el.querySelector('textarea').addEventListener('input', e => {
+      const m = state.marks.find(m => m.id === id);
+      if (m) { m.comment = e.target.value; saveLocal(); }
+    });
+  });
+}
+function geomLabel(m) {
+  if (m.type === 'point') return `(${m.geometry.x},${m.geometry.y})`;
+  if (m.type === 'rect') return `${m.geometry.w}×${m.geometry.h} @ (${m.geometry.x},${m.geometry.y})`;
+  return `${m.geometry.points.length} pts`;
+}
+
+// ---- localStorage --------------------------------------------------------
+function saveLocal() {
+  localStorage.setItem(LS_KEY, JSON.stringify({ marks: state.marks, nextId: state.nextId }));
+}
+function loadFromLocalStorage() {
+  const raw = localStorage.getItem(LS_KEY);
+  if (!raw) return;
+  try {
+    const obj = JSON.parse(raw);
+    state.marks = obj.marks || [];
+    state.nextId = obj.nextId || (state.marks.reduce((a, m) => Math.max(a, m.id), 0) + 1);
+    // Re-resolve view for any mark missing one (e.g. xml just loaded).
+    for (const m of state.marks) if (!m.view) {
+      const [cx, cy] = markCenter(m); m.view = viewSummary(nodeAt(cx, cy));
+    }
+    renderList();
+  } catch (e) { /* ignore */ }
+}
+
+// ---- save ----------------------------------------------------------------
+document.getElementById('save').addEventListener('click', save);
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); save(); }
+});
+
+async function save() {
+  const payload = {
+    image: IMAGE_FILE,
+    image_size: { w: state.imgW, h: state.imgH },
+    marks: state.marks.map(m => ({
+      id: m.id, type: m.type, geometry: m.geometry,
+      comment: m.comment || '', view: m.view || null,
+    })),
+  };
+  try {
+    const r = await fetch('/save?path=' + encodeURIComponent(MARKS_FILE), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload, null, 2),
+    });
+    if (!r.ok) throw new Error('http ' + r.status);
+    statusEl.textContent = `saved → ${MARKS_FILE} (${state.marks.length} marks)`;
+    statusEl.style.color = '#5eb46a';
+  } catch (e) {
+    statusEl.textContent = 'save failed: ' + e.message;
+    statusEl.style.color = '#e35d5d';
+  }
+}
+</script>
+</body>
+</html>

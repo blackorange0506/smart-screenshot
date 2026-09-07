@@ -1,0 +1,24 @@
+{
+  "outputDir": "smartScreenShot",
+  "slugMaxLength": 10,
+  "android": {
+    "package": "",
+    "packages": [],
+    "deviceSerial": "",
+    "deviceHost": ""
+  },
+  "ios": {
+    "bundleId": "",
+    "simulators": ["iPhone 16", "iPhone 15"],
+    "maestroBin": "",
+    "hierarchyTimeout": 90
+  },
+  "version": {
+    "file": "",
+    "regex": ""
+  },
+  "testTagsFile": "",
+  "annotator": {
+    "port": 0
+  }
+}
