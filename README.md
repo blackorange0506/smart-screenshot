@@ -1,4 +1,4 @@
-# smart-screenshot
+# smart-screenshot — screenshot + UI dump XML, annotated and handed to Claude Code
 
 Two Claude Code skills that let Claude *read* a mobile screen instead of squinting at a picture:
 
