@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>smart-screenshot — screenshot + UI dump XML, annotated and handed to Claude Code</title>
+<meta name="description" content="Two Claude Code skills: capture an Android or iOS-simulator screen as a PNG plus its UI hierarchy XML, mark it up in a local annotator, and let Claude read the screen instead of squinting at a picture.">
+<meta property="og:title" content="smart-screenshot">
+<meta property="og:description" content="Screenshot + UI dump XML, annotated and handed to Claude Code.">
+<meta property="og:image" content="https://blackorange0506.github.io/smart-screenshot/images/annotator.png">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%93%B1%3C/text%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #fbfaf7;
+    --fg: #1f2320;
+    --muted: #5d645f;
+    --line: #e3e0d8;
+    --card: #ffffff;
+    --code-bg: #f1efe8;
+    --accent: #2f6b3a;
+    --accent-ink: #ffffff;
+    --accent-soft: #e6f0e7;
+    --warm: #c8471f;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161816;
+      --fg: #e8e6df;
+      --muted: #a4a89f;
+      --line: #2c302c;
+      --card: #1e211e;
+      --code-bg: #232723;
+      --accent: #6fbf7c;
+      --accent-ink: #10190f;
+      --accent-soft: #1f2d21;
+      --warm: #ef7a54;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre, kbd {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: 0.92em;
+  }
+  code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 4px; }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; font-size: 0.9em; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+
+  header.top {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 18px 0; border-bottom: 1px solid var(--line);
+  }
+  header.top .brand { font-weight: 700; letter-spacing: -0.01em; color: var(--fg); }
+  header.top nav a { color: var(--muted); margin-left: 18px; font-size: 0.95em; }
+  header.top nav a:hover { color: var(--fg); }
+
+  .hero { padding: 64px 0 40px; }
+  .hero h1 {
+    font-size: clamp(30px, 4.6vw, 48px); line-height: 1.12; letter-spacing: -0.02em;
+    margin: 0 0 16px; max-width: 18em;
+  }
+  .hero h1 .name { color: var(--accent); }
+  .hero p.lede { font-size: 1.15em; color: var(--muted); max-width: 44em; margin: 0 0 28px; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .btn {
+    display: inline-block; padding: 10px 18px; border-radius: 8px; font-weight: 600;
+    border: 1px solid var(--accent); color: var(--accent); background: transparent;
+  }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); }
+  .btn:hover { text-decoration: none; filter: brightness(1.05); }
+  .cta .version { color: var(--muted); font-size: 0.92em; }
+
+  figure.shot { margin: 40px 0 0; }
+  figure.shot img {
+    display: block; width: 100%; height: auto; border-radius: 12px;
+    border: 1px solid var(--line); box-shadow: 0 20px 50px -30px rgba(0,0,0,0.45);
+  }
+  figure.shot figcaption { color: var(--muted); font-size: 0.92em; margin-top: 10px; text-align: center; }
+
+  section { padding: 48px 0; border-top: 1px solid var(--line); }
+  section h2 { font-size: 1.6em; letter-spacing: -0.01em; margin: 0 0 8px; }
+  section h3 { font-size: 1.12em; margin: 28px 0 8px; }
+  section > .wrap > p.sub { color: var(--muted); margin: 0 0 24px; max-width: 46em; }
+
+  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-top: 24px; }
+  .step { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
+  .step .n {
+    display: inline-flex; width: 28px; height: 28px; align-items: center; justify-content: center;
+    border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 0.9em;
+    margin-bottom: 10px;
+  }
+  .step h3 { margin: 0 0 6px; }
+  .step p { margin: 0; color: var(--muted); font-size: 0.97em; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.95em; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--code-bg); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  @media (max-width: 760px) { .two { grid-template-columns: 1fr; } }
+
+  .note {
+    border-left: 3px solid var(--warm); background: var(--card); border-radius: 0 8px 8px 0;
+    padding: 12px 16px; color: var(--muted); font-size: 0.95em;
+  }
+  .cmd { display: grid; grid-template-columns: max-content 1fr; gap: 6px 20px; }
+  .cmd code { white-space: nowrap; }
+  .cmd span { color: var(--muted); }
+  @media (max-width: 640px) { .cmd { grid-template-columns: 1fr; gap: 2px 0; } .cmd span { margin-bottom: 8px; } }
+
+  footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.92em; }
+  footer a { color: var(--muted); text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header class="top">
+    <a class="brand" href="#">smart-screenshot</a>
+    <nav>
+      <a href="#how">How it works</a>
+      <a href="#install">Install</a>
+      <a href="#use">Use</a>
+      <a href="#configure">Configure</a>
+      <a href="https://github.com/blackorange0506/smart-screenshot">GitHub</a>
+    </nav>
+  </header>
+</div>
+
+<main>
+  <div class="wrap">
+    <div class="hero">
+      <h1><span class="name">smart-screenshot</span> — screenshot + UI dump XML, annotated and handed to Claude Code</h1>
+      <p class="lede">
+        Two Claude Code skills that let Claude <em>read</em> a mobile screen instead of squinting at a picture.
+        Every capture is a PNG paired with the view hierarchy as XML: every visible node with its exact pixel bounds,
+        resource-id or test tag, text and content-description. Claude greps it, computes tap coordinates from it,
+        and ties “this button” to a specific node.
+      </p>
+      <div class="cta">
+        <a class="btn primary" href="#install">Install</a>
+        <a class="btn" href="https://github.com/blackorange0506/smart-screenshot">View on GitHub</a>
+        <span class="version">v0.1.0 · MIT · macOS, Linux, Windows (Git Bash)</span>
+      </div>
+
+      <figure class="shot">
+        <img src="images/annotator.png" width="3298" height="2018"
+             alt="The annotator: points and a rectangle drawn on a capture, each mark listed with the hierarchy node under it and a comment">
+        <figcaption>The annotator. Each mark stores the deepest hierarchy node whose bounds contain it, so Claude can say <em>which view</em> you meant.</figcaption>
+      </figure>
+    </div>
+  </div>
+
+  <section id="how">
+    <div class="wrap">
+      <h2>How it works</h2>
+      <p class="sub">Capture, annotate, hand off. The XML is the point; the PNG stays for the human and for rendering questions.</p>
+      <div class="steps">
+        <div class="step">
+          <span class="n">1</span>
+          <h3><code>/smartScreenshot</code></h3>
+          <p>Captures the current screen of an Android device or an iOS simulator as a paired PNG + XML hierarchy dump,
+             filed under <code>smartScreenShot/</code> with a date, version and commit-slug filename.</p>
+        </div>
+        <div class="step">
+          <span class="n">2</span>
+          <h3>Annotate</h3>
+          <p>A small loopback-only server opens the annotator in your browser. Draw points, rectangles and polylines,
+             comment each mark. <kbd>⌘/Ctrl+S</kbd> saves <code>&lt;stem&gt;.marks.json</code> next to the PNG, which is never modified.</p>
+        </div>
+        <div class="step">
+          <span class="n">3</span>
+          <h3><code>/processSmartScreenshot</code></h3>
+          <p>Reads a capture back, newest or <code>-N</code> back, reports what is on the screen, lists your marks with the
+             views they landed on, and offers to act on the comments that read as change requests.</p>
+        </div>
+      </div>
+
+      <h3>What a capture looks like</h3>
+<pre><code>smartScreenShot_2026-05-07_143022_v186_fix-the-th.png
+smartScreenShot_2026-05-07_143022_v186_fix-the-th.xml
+smartScreenShot_2026-05-07_143022_v186_fix-the-th.marks.json      (after annotating)
+smartScreenShot_ios_2026-05-07_143540_v186_fix-the-th.png         (--ios)
+smartScreenShot_ios_2026-05-07_143540_v186_fix-the-th.xml</code></pre>
+
+      <h3>What the XML gives Claude</h3>
+      <p>Each <code>&lt;node&gt;</code> carries <code>bounds="[x1,y1][x2,y2]"</code>, <code>resource-id</code>, <code>text</code>,
+         <code>content-desc</code>, <code>class</code> and the boolean flags uiautomator reports. On a Jetpack Compose or
+         Compose Multiplatform app, <code>resource-id</code> is the <code>Modifier.testTag</code> (with
+         <code>testTagsAsResourceId = true</code> at the root); point <code>testTagsFile</code> at the file that lists the tags and
+         Claude maps an id back to the composable. On iOS the same XML shape is produced from Maestro's hierarchy, with bounds
+         rescaled from points to pixels and the scale recorded on the root element.
+         See <a href="https://github.com/blackorange0506/smart-screenshot/blob/main/docs/ios.md">docs/ios.md</a>.</p>
+    </div>
+  </section>
+
+  <section id="requirements">
+    <div class="wrap">
+      <h2>Requirements</h2>
+      <p class="sub">Android captures work on macOS, Linux and Windows. iOS captures need macOS; the other two platforms refuse <code>--ios</code> with a clear message.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Needed</th><th>For</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td>bash 3.2+</td><td>everything</td><td>macOS <code>/bin/bash</code>, any Linux, or Git Bash on Windows</td></tr>
+            <tr><td>Python 3</td><td>everything</td><td>under any of its names: <code>python3</code>, <code>python</code>, or the <code>py</code> launcher</td></tr>
+            <tr><td>git</td><td>the commit slug</td><td>optional; without it the filename just has no slug</td></tr>
+            <tr><td><code>adb</code></td><td>Android captures</td><td>Android platform-tools on PATH; a device or emulator with USB debugging enabled</td></tr>
+            <tr><td>Xcode + <code>simctl</code></td><td>iOS captures</td><td>macOS only; simulators only, no physical iPhone</td></tr>
+            <tr><td>Java + <a href="https://maestro.mobile.dev">Maestro</a></td><td>iOS captures</td><td><code>curl -Ls https://get.maestro.mobile.dev | bash</code>; Maestro reads the iOS view hierarchy</td></tr>
+            <tr><td><code>jq</code>, <code>xmllint</code></td><td>optional</td><td>used when present; the config reader falls back to Python, the XML check to <code>grep</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="wrap">
+      <h2>Install</h2>
+      <p class="sub">Clone once, then run the installer from inside the project you want the skills in.</p>
+      <div class="two">
+        <div>
+          <h3 style="margin-top:0">macOS and Linux</h3>
+<pre><code>git clone https://github.com/blackorange0506/smart-screenshot ~/src/smart-screenshot
+cd ~/your/project
+bash ~/src/smart-screenshot/install.sh</code></pre>
+        </div>
+        <div>
+          <h3 style="margin-top:0">Windows, from Git Bash</h3>
+<pre><code>git clone https://github.com/blackorange0506/smart-screenshot /c/src/smart-screenshot
+cd /c/your/project
+bash /c/src/smart-screenshot/install.sh</code></pre>
+        </div>
+      </div>
+      <p>The installer copies the package into <code>.claude/</code> (two skills, a setup skill, the shared libraries),
+         git-ignores the capture folder, pins the scripts to LF, and writes <code>.claude/smart-screenshot/config.json</code>
+         pre-filled with what it can detect: the Android <code>applicationId</code> with flavour and build-type suffixes,
+         the iOS bundle id, where the build number lives, and a <code>TestTags.kt</code> if there is one.
+         Re-running upgrades the package files and leaves your config and captures alone.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Flag</th><th>Effect</th></tr></thead>
+          <tbody>
+            <tr><td><code>--target DIR</code></td><td>install into <code>DIR</code> instead of the current directory</td></tr>
+            <tr><td><code>--no-detect</code></td><td>write the config with empty values instead of detecting</td></tr>
+            <tr><td><code>--dry-run</code></td><td>print what would change, write nothing</td></tr>
+            <tr><td><code>--force</code></td><td>reset <code>config.json</code> from the example; the old one is kept as <code>config.json.bak</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note" style="margin-top:20px">If Claude Code is already open in the project, restart it: a new <code>.claude/skills/</code> directory is
+         only seen from the next session. Then, optionally, run <code>/smartScreenshotSetup</code>, which walks through the
+         config values, checks the tools on the machine, and runs the device-free self-tests.
+         <code>uninstall.sh</code> removes everything the installer added and keeps your captures.</p>
+    </div>
+  </section>
+
+  <section id="use">
+    <div class="wrap">
+      <h2>Use</h2>
+      <p class="sub">Connect a device or boot a simulator, open the screen you want Claude to see, and:</p>
+      <div class="cmd">
+        <code>/smartScreenshot</code><span>Android: capture, then open the annotator</span>
+        <code>/smartScreenshot --no-annotate</code><span>capture only, what Claude runs when you ask “what's on the screen?”</span>
+        <code>/smartScreenshot --with-bounds</code><span>also a PNG with Show Layout Bounds on (Android)</span>
+        <code>/smartScreenshot --with-taps</code><span>also a PNG with Show Taps on (Android)</span>
+        <code>/smartScreenshot --ios</code><span>the booted (or configured) iOS simulator</span>
+        <code>/processSmartScreenshot</code><span>read the newest capture and its marks</span>
+        <code>/processSmartScreenshot -1</code><span>the one before</span>
+      </div>
+      <h3>From a shell</h3>
+      <p>The skills run two scripts you can also call yourself:</p>
+<pre><code>bash .claude/skills/smartScreenshot/scripts/smartScreenshot.sh --no-annotate | tail -1   # prints the XML path last
+bash .claude/skills/processSmartScreenshot/scripts/select_smartScreenshot.sh -1          # KEY=path lines</code></pre>
+    </div>
+  </section>
+
+  <section id="configure">
+    <div class="wrap">
+      <h2>Configure</h2>
+      <p class="sub"><code>.claude/smart-screenshot/config.json</code>, all keys optional; environment variables override per run.
+         <a href="https://github.com/blackorange0506/smart-screenshot/blob/main/docs/configuration.md">docs/configuration.md</a> has every key and every variable.</p>
+<pre><code>{
+  "outputDir": "smartScreenShot",
+  "slugMaxLength": 10,
+  "android": { "package": "", "packages": [], "deviceSerial": "", "deviceHost": "" },
+  "ios": { "bundleId": "", "simulators": ["iPhone 16", "iPhone 15"], "maestroBin": "", "hierarchyTimeout": 90 },
+  "version": { "file": "", "regex": "" },
+  "testTagsFile": "",
+  "annotator": { "port": 0 }
+}</code></pre>
+      <p>The one value worth setting by hand is the app: <code>android.package</code> (or the <code>android.packages</code> priority
+         list for flavours) and <code>ios.bundleId</code>. Without them the capture uses the foreground app, which is right until a
+         dialog from another app is up. <code>version.file</code> + <code>version.regex</code> name where the build number lives in
+         the repo, for captures taken when the app is not installed.</p>
+    </div>
+  </section>
+
+  <section id="develop">
+    <div class="wrap">
+      <h2>Develop</h2>
+      <p class="sub">Device-free tests with a fake <code>adb</code>; CI runs them on Ubuntu, macOS (both bashes) and Windows (Git Bash), then installs into a fresh repo and captures on each.</p>
+<pre><code>bash tests/run.sh                 # every tests/*.test.sh
+/bin/bash tests/run.sh            # the same under macOS's bash 3.2
+bash scripts/lint.sh              # shellcheck + py_compile
+bash scripts/check_banlist.sh     # no trace of the project this was extracted from</code></pre>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    smart-screenshot is MIT licensed.
+    <a href="https://github.com/blackorange0506/smart-screenshot">Source</a> ·
+    <a href="https://github.com/blackorange0506/smart-screenshot/blob/main/CHANGELOG.md">Changelog</a> ·
+    <a href="https://github.com/blackorange0506/smart-screenshot/blob/main/docs/ios.md">iOS captures</a> ·
+    <a href="https://github.com/blackorange0506/smart-screenshot/blob/main/docs/configuration.md">Configuration</a>
+  </div>
+</footer>
+
+</body>
+</html>

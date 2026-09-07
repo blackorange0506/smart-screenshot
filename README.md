@@ -23,6 +23,8 @@ smartScreenShot_ios_2026-05-07_143540_v186_fix-the-th.png         (--ios)
 smartScreenShot_ios_2026-05-07_143540_v186_fix-the-th.xml
 ```
 
+![The annotator: marks on a capture, each tied to the hierarchy node under it](docs/images/annotator.png)
+
 ## Requirements
 
 | Needed            | For                | Notes                                                                                   |
